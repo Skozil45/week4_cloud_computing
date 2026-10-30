@@ -68,7 +68,7 @@ test('more than three submissions per minute are blocked', function () {
 
 test('each email embeds the selected image and escapes user content', function ($picture) {
     $sent = Mail::mailer('array')->to('friend@example.com')->send(
-        new PictureMail('Dina <b>Test</b>', '<script>alert(1)</script>', $picture),
+        new PictureMail('Dina <b>Test</b>', "<script>alert(1)</script>\nBaris kedua", $picture),
     );
     $message = $sent->getOriginalMessage();
     $inline = array_values(array_filter($message->getAttachments(), fn ($part) => $part->getDisposition() === 'inline'));
@@ -77,6 +77,7 @@ test('each email embeds the selected image and escapes user content', function (
         ->toContain('cid:'.$inline[0]->getContentId())
         ->toContain('Dina &lt;b&gt;Test&lt;/b&gt;')
         ->toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+        ->toContain("<br />\nBaris kedua")
         ->not->toContain('<script>');
     expect($inline[0]->getBody())->toBe(file_get_contents(public_path('images/'.config('postcards.'.$picture.'.file'))));
     expect($message->getAttachments())->toHaveCount(2);
