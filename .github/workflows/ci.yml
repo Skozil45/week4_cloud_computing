@@ -1,10 +1,9 @@
 name: Laravel 13 CI/CD Deployment
 
-# Tests every push to main, then deploys if they pass. The deploy job stays off
-# until the repository variable DEPLOY_ENABLED is set to "true".
+# Tests every push to main, then deploys if they pass.
 #
 # Repository secrets:   SSH_HOST, SSH_USERNAME, SSH_KEY, SSH_FINGERPRINT
-# Repository variables: DEPLOY_ENABLED, SSH_PORT (optional, defaults to 22)
+# Repository variables: SSH_PORT (optional, defaults to 22)
 
 on:
   push:
@@ -99,7 +98,7 @@ jobs:
   deploy:
     name: Deploy to Live Hosting
     needs: laravel-tests
-    if: vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -118,7 +117,7 @@ jobs:
       - name: Install Production Composer Dependencies
         run: composer install --no-dev --optimize-autoloader --prefer-dist --no-ansi --no-interaction --no-progress
 
-      # The repo is private, so the server cannot git pull. The code ships with vendor/ instead.
+      # The code ships with vendor/, so the server needs no git pull or Composer install.
       - name: Package Release
         run: tar -czf release.tar.gz app artisan bootstrap composer.json composer.lock config database public resources routes vendor
 
