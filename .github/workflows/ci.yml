@@ -103,6 +103,59 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      # Prints only pass/fail results and public host fingerprints, never the secret values.
+      - name: Check Deploy Secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_FINGERPRINT: ${{ secrets.SSH_FINGERPRINT }}
+          SSH_PORT: ${{ vars.SSH_PORT || 22 }}
+        run: |
+          failed=0
+          for name in SSH_HOST SSH_USERNAME SSH_KEY SSH_FINGERPRINT; do
+            if [ -z "${!name}" ]; then
+              echo "FAIL: $name is empty"
+              failed=1
+            fi
+          done
+
+          key_file=$(mktemp)
+          printf '%s\n' "$SSH_KEY" > "$key_file"
+          if ssh-keygen -y -P '' -f "$key_file" > /dev/null 2>&1; then
+            echo "OK: SSH_KEY is a valid private key"
+          else
+            failed=1
+            case "$SSH_KEY" in
+              SHA256:*) echo "FAIL: SSH_KEY holds a fingerprint, so it may be swapped with SSH_FINGERPRINT" ;;
+              ssh-*) echo "FAIL: SSH_KEY holds the public key (deploy_key.pub), not the private key" ;;
+              -----BEGIN*) echo "FAIL: SSH_KEY starts correctly but is incomplete or damaged ($(wc -l < "$key_file") lines, expected 7)" ;;
+              *) echo "FAIL: SSH_KEY is not a private key ($(wc -l < "$key_file") lines, expected 7)" ;;
+            esac
+          fi
+          rm -f "$key_file"
+
+          host_keys=$(ssh-keyscan -T 10 -p "$SSH_PORT" "$SSH_HOST" 2> /dev/null | ssh-keygen -lf - 2> /dev/null | awk '{print $2, $NF}')
+          echo "Host keys this runner sees:"
+          echo "$host_keys"
+          if [ -z "$host_keys" ]; then
+            echo "FAIL: could not read host keys from SSH_HOST"
+            failed=1
+          elif echo "$host_keys" | grep -qF "$SSH_FINGERPRINT (ECDSA)"; then
+            echo "OK: SSH_FINGERPRINT matches the ECDSA host key"
+          elif echo "$host_keys" | grep -qF "$SSH_FINGERPRINT "; then
+            echo "FAIL: SSH_FINGERPRINT matches a host key, but not the ECDSA one the deploy uses"
+            failed=1
+          else
+            case "$SSH_FINGERPRINT" in
+              -----BEGIN*) echo "FAIL: SSH_FINGERPRINT holds a private key, so it may be swapped with SSH_KEY" ;;
+              *) echo "FAIL: SSH_FINGERPRINT does not match any host key (${#SSH_FINGERPRINT} characters, expected 50)" ;;
+            esac
+            failed=1
+          fi
+
+          exit "$failed"
+
       - name: Checkout Code
         uses: actions/checkout@v7
 
