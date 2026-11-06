@@ -12,7 +12,7 @@
     <main class="form-card">
         <header class="card-header">
             <h1>Kirimin</h1>
-            <p>Form Pengiriman Test</p>
+            <p>Form Pengiriman Gambar</p>
         </header>
         <form id="postcard-form" action="{{ route('picture.send') }}" method="POST">
             @csrf
