@@ -1,85 +1,159 @@
-name: CI
+name: Laravel 13 CI/CD Deployment
+
+# Tests every push to main, then deploys if they pass. The deploy job stays off
+# until the repository variable DEPLOY_ENABLED is set to "true".
+#
+# Repository secrets:   SSH_HOST, SSH_USERNAME, SSH_KEY, SSH_FINGERPRINT
+# Repository variables: DEPLOY_ENABLED, SSH_PORT (optional, defaults to 22)
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PHP_VERSION: '8.4'
+  DEPLOY_PATH: /home/ourprojects-phpjermy/htdocs/phpjermy.ourprojects.my.id
 
 jobs:
-  php:
-    name: Pint & Pest (PHP ${{ matrix.php }})
+  laravel-tests:
+    name: Run Tests & Build Assets
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
-    strategy:
-      fail-fast: false
-      matrix:
-        # composer.json allows ^8.3, but composer.lock needs >=8.4.1 (Symfony 8, Pest 5).
-        php: ['8.4']
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MYSQL_DATABASE: testing
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5
 
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v7
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: ${{ matrix.php }}
-          extensions: mbstring, dom, fileinfo, pdo_sqlite, sqlite3
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, dom, fileinfo, pdo_mysql
           tools: composer:v2
           coverage: none
 
-      - name: Locate Composer cache
-        id: composer-cache
-        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Composer packages
-        uses: actions/cache@v6
-        with:
-          path: ${{ steps.composer-cache.outputs.dir }}
-          key: composer-${{ runner.os }}-php${{ matrix.php }}-${{ hashFiles('composer.lock') }}
-          restore-keys: composer-${{ runner.os }}-php${{ matrix.php }}-
-
-      - name: Install Composer dependencies
-        run: composer install --no-interaction --prefer-dist --no-progress
-
-      # phpunit.xml does not set APP_KEY, and the web middleware cannot encrypt without one.
-      - name: Prepare environment
-        run: |
-          cp .env.example .env
-          php artisan key:generate --ansi
-
-      - name: Check code style
-        run: vendor/bin/pint --test
-
-      - name: Run tests
-        run: vendor/bin/pest --ci
-
-  assets:
-    name: Vite build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 26
           cache: npm
 
-      - name: Install npm dependencies
-        run: npm ci
+      - name: Locate Composer Cache
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
-      - name: Build assets
-        run: npm run build
+      - name: Cache Composer Dependencies
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install Composer Dependencies
+        run: composer install --prefer-dist --no-ansi --no-interaction --no-progress
+
+      # phpunit.xml does not set APP_KEY, and the web middleware cannot encrypt without one.
+      - name: Copy Environment File
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+
+      - name: Check Code Style
+        run: vendor/bin/pint --test
+
+      - name: Run Migrations & Tests
+        run: |
+          php artisan migrate --env=testing
+          php artisan test
+        env:
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: testing
+          DB_USERNAME: root
+          DB_PASSWORD: ''
+
+      - name: Install NPM Dependencies & Build Assets
+        run: |
+          npm ci
+          npm run build
+
+  deploy:
+    name: Deploy to Live Hosting
+    needs: laravel-tests
+    if: vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, dom, fileinfo, pdo_mysql
+          tools: composer:v2
+          coverage: none
+
+      - name: Install Production Composer Dependencies
+        run: composer install --no-dev --optimize-autoloader --prefer-dist --no-ansi --no-interaction --no-progress
+
+      # The repo is private, so the server cannot git pull. The code ships with vendor/ instead.
+      - name: Package Release
+        run: tar -czf release.tar.gz app artisan bootstrap composer.json composer.lock config database public resources routes vendor
+
+      - name: Upload Release to Server
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          port: ${{ vars.SSH_PORT || 22 }}
+          source: release.tar.gz
+          target: ${{ env.DEPLOY_PATH }}
+          overwrite: true
+
+      # .env, storage/ and SQLite files are not in the release, so the server keeps them.
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
+          port: ${{ vars.SSH_PORT || 22 }}
+          script: |
+            set -e
+            # deployer shares the site's group, so new files must stay group-writable for PHP.
+            umask 002
+            cd ${{ env.DEPLOY_PATH }}
+            test -f .env
+            rm -rf vendor
+            # Existing folders belong to the site user, so tar must not try to change them.
+            tar --no-overwrite-dir -xzf release.tar.gz
+            rm -f release.tar.gz
+            mkdir -p bootstrap/cache storage/logs storage/framework/cache/data storage/framework/sessions storage/framework/views
+            php artisan config:clear
+            php artisan migrate --force
+            php artisan optimize
