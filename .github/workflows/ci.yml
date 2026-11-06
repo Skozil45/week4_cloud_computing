@@ -141,9 +141,9 @@ jobs:
           if [ -z "$host_keys" ]; then
             echo "FAIL: could not read host keys from SSH_HOST"
             failed=1
-          elif echo "$host_keys" | grep -qF "$SSH_FINGERPRINT (ECDSA)"; then
+          elif echo "$host_keys" | grep -qF -- "$SSH_FINGERPRINT (ECDSA)"; then
             echo "OK: SSH_FINGERPRINT matches the ECDSA host key"
-          elif echo "$host_keys" | grep -qF "$SSH_FINGERPRINT "; then
+          elif echo "$host_keys" | grep -qF -- "$SSH_FINGERPRINT "; then
             echo "FAIL: SSH_FINGERPRINT matches a host key, but not the ECDSA one the deploy uses"
             failed=1
           else
